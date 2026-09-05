@@ -1230,7 +1230,17 @@ function ensureCatalogCoverage(config) {
     added.enabled = false
     next.widgets.push(added)
   }
-  return next
+  // Normalize the additions the way the rest of the config is normalized:
+  // a bare `defaultInstance` leaves `side` unresolved, and a widget whose
+  // `side` resolves only on the next load serializes differently than the
+  // bytes that produced it. The service's save/watch loop compares the text
+  // on disk against a fresh serialization to decide whether writing again
+  // would help, and a config that cannot settle on one canonical form makes
+  // that comparison fail forever -- every reload rewrites the file, and a
+  // write mid-reload is how a transient read replaces a good config with a
+  // bare default. Resolving the additions here makes coverage idempotent, so
+  // the round trip settles after a single pass.
+  return normalizeConfig(next)
 }
 
 function findInstance(config, id) {

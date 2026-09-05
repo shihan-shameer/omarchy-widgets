@@ -163,6 +163,16 @@ Item {
     if (text.replace(/^\s+|\s+$/g, "").length === 0) {
       // First run, or a file emptied by hand. Seed the defaults and write
       // them back, so there is something to edit next time someone looks.
+      //
+      // One guard: once a config has loaded, a momentarily empty read is not
+      // a request to forget it. `reload()` races the file watcher's own
+      // events, and an atomic write or an external truncate can surface as an
+      // empty `onLoaded` for a frame. Replacing the config that was already
+      // running with a bare default -- and then writing that default back --
+      // is exactly how a good file loses every widget switched on since the
+      // first run, the newest catalogue entries included. Keep what is on
+      // screen and leave the file alone; the next full read stands on its own.
+      if (service.configLoaded) return
       next = Model.defaultConfig()
     } else {
       var parsed = null

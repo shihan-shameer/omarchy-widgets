@@ -363,6 +363,56 @@ test("coverage leaves widgets that are already configured alone", () => {
   assert.deepEqual([out.widgets[0].col, out.widgets[0].row], [1, 2])
 })
 
+// The bytes Service.qml writes and compares against the file on disk. The
+// service decides whether a reload loop has converged by asking whether a
+// fresh serialization equals the text it just read, so a config that cannot
+// serialize to one stable form rewrites itself forever.
+function serialize(config) {
+  return JSON.stringify(config, (key, value) =>
+    key === "opacity" && value === null ? undefined : value, 2) + "\n"
+}
+
+test("a config without the newest type gains it as a disabled entry, untouched elsewhere", () => {
+  const before = Model.normalizeConfig({
+    widgets: Model.catalogTypes().filter((t) => t !== "lyrics").map((t, i) => ({
+      id: t, type: t, enabled: i === 0, settings: t === "clock" ? { label: "BLR" } : undefined
+    }))
+  })
+  assert.equal(before.widgets.some((w) => w.type === "lyrics"), false)
+  assert.equal(Model.findInstance(before, "clock").settings.label, "BLR")
+
+  const covered = Model.ensureCatalogCoverage(before)
+  const lyrics = covered.widgets.find((w) => w.type === "lyrics")
+  assert.ok(lyrics, "the new catalogue type is added")
+  assert.equal(lyrics.enabled, false)
+  assert.equal(covered.widgets.filter((w) => w.type === "clock").length, 1)
+  assert.equal(Model.findInstance(covered, "clock").settings.label, "BLR",
+    "the config that was already there is not rewritten")
+})
+
+test("coverage settles on one canonical serialization, so the save/watch loop stops", () => {
+  // The service's reload loop compares the bytes on disk against a freshly
+  // serialized config and stops only when they match. A covered config that
+  // serializes differently after a load (before the fix, a newly added widget
+  // carried an unresolved `side` that normalized only on the next read) makes
+  // that comparison fail forever, and every extra write is another chance for
+  // a transient read to replace a good config. Coverage must be byte-stable
+  // after a single pass.
+  const config = Model.ensureCatalogCoverage({
+    widgets: Model.catalogTypes().filter((t) => t !== "lyrics").map((t) => ({ id: t, type: t, enabled: false }))
+  })
+  const first = serialize(config)
+  const reloaded = Model.ensureCatalogCoverage(JSON.parse(first))
+  const second = serialize(reloaded)
+  const again = Model.ensureCatalogCoverage(JSON.parse(second))
+  const third = serialize(again)
+
+  assert.equal(second, first, "load then coverage must not change the serialized form")
+  assert.equal(third, second, "and it must not of course change a second time")
+  assert.equal(JSON.parse(first).widgets.find((w) => w.type === "lyrics").side,
+    Model.normalizeLayout(null).side, "the added widget's side resolves in the first pass")
+})
+
 // ---------------------------------------------------------------- migration
 
 test("a config from the free-placement model is repacked, not discarded", () => {
