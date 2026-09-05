@@ -1537,6 +1537,115 @@ test("an array-like list of players works as well as an array", () => {
   assert.equal(Model.pickPlayerIndex({}, ""), -1)
 })
 
+// ------------------------------------------------------------------ lyrics
+
+test("a lyric cache key is one song however MPRIS spells it", () => {
+  assert.equal(Model.trackKey("Radiohead", "Karma Police"), "radiohead|karma police")
+  assert.equal(Model.trackKey("radiohead", "KARMA POLICE"), "radiohead|karma police")
+  assert.equal(Model.trackKey("  radiohead ", "karma police"), "radiohead|karma police")
+  // One field alone still names a lookup, but nothing at all does not.
+  assert.equal(Model.trackKey("Radiohead", ""), "radiohead|")
+  assert.equal(Model.trackKey("", "Karma Police"), "|karma police")
+  assert.equal(Model.trackKey("", ""), "")
+  assert.equal(Model.trackKey(null, undefined), "")
+})
+
+test("LRC parses into timed lines, in time order", () => {
+  const raw = [
+    "[00:12.34] first line",
+    "[00:14.00][00:20.00] repeated line",
+    "[00:15.5] a fifth of a second",
+    "[01:02.040] a hundredth",
+    "[ti: A title that should be ignored]",
+    "[ar: So should this]",
+    "[00:13] plain seconds"
+  ].join("\n")
+  const lines = Model.parseLrc(raw)
+  assert.equal(lines.length, 6)
+  assert.deepEqual([lines[0].time, lines[0].text], [12.34, "first line"])
+  assert.deepEqual([lines[1].time, lines[1].text], [13, "plain seconds"])
+  assert.deepEqual([lines[3].time, lines[3].text], [15.5, "a fifth of a second"])
+  assert.equal(lines[5].time, 62.04, "minutes roll past the minute mark")
+  // The two tags on one line produce two entries.
+  assert.ok(lines.some((l) => l.time === 14 && l.text === "repeated line"))
+  assert.ok(lines.some((l) => l.time === 20 && l.text === "repeated line"))
+  // Times come back sorted even if the file did not bother.
+  for (let i = 1; i < lines.length; i++) assert.ok(lines[i].time >= lines[i - 1].time)
+})
+
+test("LRC defends against junk", () => {
+  assert.deepEqual(Model.parseLrc(""), [])
+  assert.deepEqual(Model.parseLrc("just some words"), [])
+  assert.deepEqual(Model.parseLrc("[00:12.00]"), [], "a tag with no words is empty")
+  assert.deepEqual(Model.parseLrc(null), [])
+  assert.deepEqual(Model.parseLrc("[00:12.00] trailing words  "),
+    [{ time: 12, text: "trailing words" }])
+  assert.deepEqual(Model.parseLrc("[00:ab.cd] not a time"),
+    [], "a tag that is not a number is skipped")
+})
+
+test("plainly, only non-blank lines are words", () => {
+  assert.deepEqual(Model.plainLines("zero\n\none\n  \ntwo "), ["zero", "one", "two"])
+  assert.deepEqual(Model.plainLines(""), [])
+  assert.deepEqual(Model.plainLines("\n\n"), [])
+  assert.deepEqual(Model.plainLines(null), [])
+})
+
+test("an LRCLIB response becomes timed lines when it can", () => {
+  const timed = Model.parseLyricsResponse(JSON.stringify({ syncedLyrics: "[00:01.00] hi" }))
+  assert.deepEqual(timed, { lines: [{ time: 1, text: "hi" }], synced: true, state: "ready" })
+
+  const plain = Model.parseLyricsResponse(JSON.stringify({
+    syncedLyrics: "", plainLyrics: "hi\nthere"
+  }))
+  assert.deepEqual(plain, { lines: ["hi", "there"], synced: false, state: "ready" })
+
+  // Synced words win even when the plain field also exists.
+  const both = Model.parseLyricsResponse(JSON.stringify({
+    syncedLyrics: "[00:01.00] hi", plainLyrics: "fallback"
+  }))
+  assert.equal(both.synced, true)
+  assert.equal(both.lines.length, 1)
+
+  // No words, a bad document, a blank document: not found.
+  assert.equal(Model.parseLyricsResponse(JSON.stringify({ syncedLyrics: "", plainLyrics: "" })), null)
+  assert.equal(Model.parseLyricsResponse("not json"), null)
+  assert.equal(Model.parseLyricsResponse(""), null)
+  assert.equal(Model.parseLyricsResponse(null), null)
+})
+
+test("the current lyric line is the last one whose time has passed", () => {
+  const lines = [{ time: 0.5, text: "a" }, { time: 5, text: "b" }, { time: 10, text: "c" }]
+  assert.equal(Model.lyricIndexAt(lines, 0), -1, "before the first tag there is no line")
+  assert.equal(Model.lyricIndexAt(lines, 0.5), 0, "exactly on the tag")
+  assert.equal(Model.lyricIndexAt(lines, 4.99), 0)
+  assert.equal(Model.lyricIndexAt(lines, 5), 1)
+  assert.equal(Model.lyricIndexAt(lines, 999), 2, "past the end stays on the last line")
+
+  // Equal timestamps (a chorus of repeated lines) keep the last one current.
+  const chorus = [{ time: 1, text: "one" }, { time: 1, text: "two" }]
+  assert.equal(Model.lyricIndexAt(chorus, 1), 1)
+
+  assert.equal(Model.lyricIndexAt([], 5), -1)
+  assert.equal(Model.lyricIndexAt(lines, -1), -1)
+  assert.equal(Model.lyricIndexAt(lines, NaN), -1)
+  assert.equal(Model.lyricIndexAt(null, 5), -1)
+})
+
+test("plain lyrics estimate their place by length", () => {
+  assert.equal(Model.estimatedIndex(["a", "b", "c", "d"], 0, 40), 0)
+  assert.equal(Model.estimatedIndex(["a", "b", "c", "d"], 10, 40), 1)
+  assert.equal(Model.estimatedIndex(["a", "b", "c", "d"], 20, 40), 2)
+  assert.equal(Model.estimatedIndex(["a", "b", "c", "d"], 39, 40), 3)
+  assert.equal(Model.estimatedIndex(["a", "b", "c", "d"], 40, 40), 3, "the end stays in bounds")
+
+  // Without a length there is no honest estimate.
+  assert.equal(Model.estimatedIndex(["a", "b"], 10, 0), -1)
+  assert.equal(Model.estimatedIndex(["a", "b"], 10, -1), -1)
+  assert.equal(Model.estimatedIndex([], 10, 100), -1)
+  assert.equal(Model.estimatedIndex(null, 10, 100), -1)
+})
+
 // ------------------------------------------------------------ interactivity
 
 // The desktop surface has no input region, so a click lands on whatever is

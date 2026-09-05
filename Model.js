@@ -369,6 +369,118 @@ function catalog() {
           defaultValue: ""
         }
       ]
+    },
+    {
+      type: "lyrics",
+      name: "Lyrics",
+      description: "The words to whatever is playing, following the song.",
+      source: "widgets/Lyrics.qml",
+      // Wide first: it is a thing to read, and a row of reading wants length.
+      // The tall size is for karaoke — the current line and the ones around
+      // it, following the song.
+      sizes: [[2, 1], [1, 1], [2, 2]],
+      // LRCLIB, which the whole Omarchy world can read without a key. Only
+      // fetched while a lyrics widget is switched on, cached per track so a
+      // repeat play costs nothing.
+      network: "lrclib.net",
+      // Like the music card, this follows one player, so a second copy would
+      // be the first one twice; no Duplicate button.
+      settings: [
+        {
+          key: "player",
+          type: "text",
+          label: "Player",
+          help: "Spotify, Firefox, mpv - blank follows whatever is playing",
+          defaultValue: ""
+        },
+        {
+          key: "fontFamily",
+          type: "text",
+          label: "Font family",
+          help: "Empty follows the theme",
+          defaultValue: ""
+        },
+        {
+          key: "fontSize",
+          type: "number",
+          label: "Font size",
+          help: "Points; 0 sizes it to the card",
+          defaultValue: 0
+        },
+        {
+          key: "textOpacity",
+          type: "number",
+          label: "Text opacity",
+          help: "How solid the words are",
+          defaultValue: 0.95
+        },
+        {
+          // The card sits where the editor's grid puts it; these nudge the
+          // lyrics inside the card. Offsets are in px, negative moves up or
+          // left.
+          key: "posX",
+          type: "number",
+          label: "X position",
+          help: "Horizontal offset within the card",
+          defaultValue: 0
+        },
+        {
+          key: "posY",
+          type: "number",
+          label: "Y position",
+          help: "Vertical offset within the card",
+          defaultValue: 0
+        },
+        {
+          key: "animationMode",
+          type: "choice",
+          label: "Animation",
+          defaultValue: "fade",
+          options: [
+            { value: "fade", label: "Fade" },
+            { value: "slide", label: "Slide" },
+            { value: "typewriter", label: "Typewriter" }
+          ]
+        },
+        {
+          key: "animationSpeed",
+          type: "number",
+          label: "Animation speed",
+          help: "1 is normal; higher is faster",
+          defaultValue: 1
+        },
+        {
+          key: "alignment",
+          type: "choice",
+          label: "Alignment",
+          defaultValue: "center",
+          options: [
+            { value: "left", label: "Left" },
+            { value: "center", label: "Center" },
+            { value: "right", label: "Right" }
+          ]
+        },
+        {
+          key: "maxWidth",
+          type: "number",
+          label: "Maximum text width",
+          help: "Points; 0 fills the card",
+          defaultValue: 0
+        },
+        {
+          key: "wrap",
+          type: "boolean",
+          label: "Wrap long lines",
+          defaultValue: true
+        },
+        {
+          key: "contextLines",
+          type: "number",
+          label: "Surrounding lines",
+          help: "Lines shown above and below the current one",
+          defaultValue: 2
+        }
+      ]
     }
   ]
 }
@@ -1726,6 +1838,131 @@ function playerTransport(player) {
     previous: !!player && player.canGoPrevious === true,
     next: !!player && player.canGoNext === true
   }
+}
+
+// ------------------------------------------------------------------ lyrics
+//
+// Lyrics come from LRCLIB (lrclib.net), which is free, needs no key, and
+// publishes two fields at once: `syncedLyrics`, which is LRC with timestamps,
+// and `plainLyrics` for when a song has no synced version. Everything below is
+// the parsing and the timing; the widget draws and the service supplies bytes.
+//
+// The key a song is cached under. MPRIS metadata is case-unstable, so the key
+// is lower-cased: "Artist|Title" and "artist|title" are one song, and repeating
+// a track costs no request. Ordered artist first because that is the less
+// likely field to be empty.
+function trackKey(artist, title) {
+  var a = clampString(artist).replace(/^\s+|\s+$/g, "").toLowerCase()
+  var t = clampString(title).replace(/^\s+|\s+$/g, "").toLowerCase()
+  if (!a && !t) return ""
+  return a + "|" + t
+}
+
+// LRC is a line of `[mm:ss.xx]` tags followed by words. A line may carry
+// several tags, meaning the words are sung each time. Metadata tags such as
+// `[ti:...]` or `[offset:...]` match no time pattern and are skipped.
+function parseLrc(raw) {
+  var src = String(raw || "")
+  var sourceLines = src.split(/\r?\n/)
+  var out = []
+  var re = /\[(\d{1,2}):(\d{1,2})(?:[.:](\d+))?\]/g
+  for (var i = 0; i < sourceLines.length; i++) {
+    var line = sourceLines[i]
+    if (!line) continue
+    var tags = []
+    var match = null
+    re.lastIndex = 0
+    while ((match = re.exec(line)) !== null) tags.push(match)
+    if (tags.length === 0) continue
+    // A failed exec rewinds `lastIndex` to 0, so the text is measured from the
+    // end of the last tag, not from that.
+    var lastTag = tags[tags.length - 1]
+    var text = line.slice(lastTag.index + lastTag[0].length).replace(/^\s+|\s+$/g, "")
+    if (!text) continue
+    for (var j = 0; j < tags.length; j++) {
+      var minutes = Number(tags[j][1])
+      var seconds = Number(tags[j][2])
+      var fraction = tags[j][3] && tags[j][3].length > 0 ? Number("0." + tags[j][3]) : 0
+      out.push({
+        time: minutes * 60 + seconds + fraction,
+        text: text
+      })
+    }
+  }
+  // A song edited in place arrives with its blocks in order, but an LRC file
+  // hand-built in a text editor is not something to bet a binary search on.
+  out.sort(function (a, b) { return a.time - b.time })
+  return out
+}
+
+// Plain lyrics have no timestamps: every non-blank line, as it is.
+function plainLines(raw) {
+  var src = String(raw || "")
+  var sourceLines = src.split(/\r?\n/)
+  var out = []
+  for (var i = 0; i < sourceLines.length; i++) {
+    var text = sourceLines[i].replace(/^\s+|\s+$/g, "")
+    if (text) out.push(text)
+  }
+  return out
+}
+
+// The LRCLIB response, reduced to what a card can draw: the timed lines when
+// the song has synced lyrics, the plain lines otherwise, and nothing at all
+// for a song LRCLIB does not have. Returns null for a response that cannot be
+// read or has no words, which the service stores as "missing".
+function parseLyricsResponse(raw) {
+  var parsed = null
+  try {
+    parsed = JSON.parse(String(raw || ""))
+  } catch (e) {
+    return null
+  }
+  if (!isPlainObject(parsed)) return null
+  var syncedText = String(parsed.syncedLyrics || "")
+  var plainText = String(parsed.plainLyrics || "")
+  if (syncedText) {
+    var timed = parseLrc(syncedText)
+    if (timed.length > 0) return { lines: timed, synced: true, state: "ready" }
+  }
+  var words = plainLines(plainText)
+  if (words.length > 0) return { lines: words, synced: false, state: "ready" }
+  return null
+}
+
+// Where a song is, as an index into `lines` (sorted by time): the last line
+// whose time has passed, or -1 before the first one. A binary search, so a
+// long verse scans in a handful of compares rather than a linear walk on every
+// frame.
+function lyricIndexAt(lines, position) {
+  var count = Array.isArray(lines) ? lines.length : 0
+  if (count === 0) return -1
+  var pos = Number(position)
+  if (!isFinite(pos) || pos < 0) return -1
+  var lo = 0
+  var hi = count - 1
+  var best = -1
+  while (lo <= hi) {
+    var mid = (lo + hi) >> 1
+    var at = Number(lines[mid].time)
+    if (at <= pos) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
+  }
+  return best
+}
+
+// Plain lyrics have no timestamps, so a card that wants to follow the song has
+// to guess: spread the lines evenly across the track's length. A player that
+// has not said how long the track is gets -1 instead, and the card simply
+// shows the words.
+function estimatedIndex(lines, position, length) {
+  var count = Array.isArray(lines) ? lines.length : 0
+  if (count === 0) return -1
+  var pos = Number(position)
+  var len = Number(length)
+  if (!isFinite(pos) || !isFinite(len) || len <= 0) return -1
+  var fraction = Math.min(1, Math.max(0, pos / len))
+  if (fraction >= 1) return count - 1
+  return Math.floor(fraction * count)
 }
 
 // -------------------------------------------------------- contributions
@@ -3130,6 +3367,12 @@ if (typeof module !== "undefined" && module.exports) {
     pickPlayerIndex: pickPlayerIndex,
     hasPlayable: hasPlayable,
     playerTransport: playerTransport,
+    trackKey: trackKey,
+    parseLrc: parseLrc,
+    plainLines: plainLines,
+    parseLyricsResponse: parseLyricsResponse,
+    lyricIndexAt: lyricIndexAt,
+    estimatedIndex: estimatedIndex,
     isSafeLogin: isSafeLogin,
     loginsInUse: loginsInUse,
     MAX_CONTRIBUTION_BYTES: MAX_CONTRIBUTION_BYTES,

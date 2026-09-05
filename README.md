@@ -52,6 +52,7 @@ on your desktop.
 | **Calendar** | What is next in your Google Calendar, and when | `calendar.google.com` |
 | **Todos** | Today's list, from a text file. Tick things off; the title opens it | local (a file) |
 | **Music** | What is playing, how far in, and the transport for it | local (MPRIS) |
+| **Lyrics** | The words to whatever is playing, following the song | `lrclib.net` |
 
 ```
    ┌─────────┬─────────┐        side: left | right
@@ -68,7 +69,7 @@ on your desktop.
 ```
 
 No account, no telemetry. The clock, the todo list and the music widget touch
-nothing outside your machine. Four widgets do make requests, **each only while
+nothing outside your machine. Five widgets do make requests, **each only while
 it is switched on**, each to one host and no third party — the table above
 says which.
 
@@ -97,6 +98,7 @@ says which.
   - [Ticking things off](#ticking-things-off)
   - [Scrolling, and opening the file](#scrolling-and-opening-the-file)
 - [Music](#music)
+- [Lyrics](#lyrics)
 - [Config file](#config-file)
   - [The layout block](#the-layout-block)
   - [Each widget](#each-widget)
@@ -622,6 +624,57 @@ one, the **Player** setting names the one to follow — `spotify`, `firefox`,
 `mpv`. It is matched against the player's own name and its bus name, and a
 blank value goes back to following whatever is playing.
 
+## Lyrics
+
+The words to whatever is playing, fetched on demand from
+**[LRCLIB](https://lrclib.net)** — a free peer-contributed lyric database, no
+account and no key. It follows the same **MPRIS** player as [Music](#music)
+above, so the two cards always agree about which song is the current one.
+
+The requested fields are only the song's name, its artist and its length; the
+words themselves come back in the **LRC** format with their timestamps, and
+the current line is the one the song's position has reached. Pause the song
+and the card holds its place; press play and it goes on; skip or seek and it
+catches up — the same position that drives the progress bar drives the words.
+A song LRCLIB does not know shows a short line saying so rather than a blank
+card, and only asks again an hour later, because asking twice in a row will
+not change the answer. Fetched words are kept for the rest of the session, so
+going back to a song is instant.
+
+The name of the song and who plays it sit above the words in the one accent on
+the card; the words themselves are foreground, the ones behind a little fainter
+than the ones ahead. **Around current line** sets how many lines of context are
+shown — the words scroll into view rather than jumping.
+
+### Timing
+
+LRCLIB is a community database, so not every song has timed words. A track
+with **synced** lyrics follows its timestamps exactly; one it only has in
+plain text gets an honest *estimate* instead, spread evenly across the song's
+length, and one from a player that has not said how long it is simply shows
+the words without a current line. The estimates keep the card moving but are
+not a substitute for real timing.
+
+### Layout
+
+The same sizes as Music, in whichever cells you give it. **X offset** and
+**Y offset** move the words around *inside* the card — the card itself stays
+on the grid, so the words can sit under the edge, in a corner, or right at the
+screen border without breaking the layout. **Wrap**, **Max width**, **Align**
+and **Font family** shape the words, and **Text opacity** and **Font size** are
+their own numbers (a font size of `0` sizes itself to the card). The card
+changes with the song rather than the clock, so apart from the current line it
+asks nothing of the theme.
+
+### Animation
+
+**Fade**, **Slide** or **Typewriter**, and how quickly each one runs. This is
+the one card in the set that animates on its own: the words change line, and
+a line breaking *is* the thing worth looking at, which is the exception the
+design rules make. Fade swaps between lines smoothly, slide pushes the past
+lines one way and the future ones the other, and typewriter prints the current
+line a character at a time — pausing the song freezes it mid-word.
+
 ## Config file
 
 `~/.config/omarchy/widgets.json`, created with sensible defaults the first
@@ -692,7 +745,7 @@ timezones, colors and rounding all survive, and each widget is given a cell.
 | Key | Meaning |
 |---|---|
 | `id` | Yours, and unique. The name the popup, the editor and the CLI use. Rename it and the widget is renamed everywhere |
-| `type` | Which widget: `clock`, `weather`, `github`, `repo-pulse`, `calendar`, `todos`, `music` |
+| `type` | Which widget: `clock`, `weather`, `github`, `repo-pulse`, `calendar`, `todos`, `music`, `lyrics` |
 | `enabled` | Whether it is on the desktop. The popup switch writes this |
 | `monitor` | Output name (`hyprctl monitors`), or `""` for all of them |
 | `side` | `left` or `right`. Omit it (or write anything else) and it is filled in with the layout's own side when the file is read |

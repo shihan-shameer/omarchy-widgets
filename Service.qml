@@ -748,6 +748,120 @@ Item {
     onTriggered: service.refreshCalendars(true)
   }
 
+  // ----------------------------------------------------------------- lyrics
+  //
+  // The words to whatever is playing, from LRCLIB (lrclib.net). It is free, it
+  // needs no key, and its `syncedLyrics` field is LRC with timestamps, which
+  // is what lets a card follow the song. Read-only use sends no secret.
+  //
+  // Fetching lives here for the usual reason: a request is per *track*, not
+  // per card, so however many lyrics widgets point at the same song share one
+  // fetch -- and the finished lyrics are cached by "artist|title", so hearing
+  // the same track twice costs nothing at all.
+  //
+  // The widget drives it. Only the widget knows which player is actually
+  // playing (that is the music card's judgement, and this card uses the same),
+  // so it calls `requestLyrics` when the track it follows changes. The fetch
+  // is debounced via the queue so a player that publishes artist and title a
+  // moment apart costs one request, not two.
+
+  // "artist|title" -> { lines, synced, state, at }. `state` is "fetching"
+  // while a request is out, "ready" with words, or "missing" when LRCLIB has
+  // nothing for the song.
+  property var lyrics: ({})
+  property string lyricsError: ""
+  property var lyricQueue: []
+
+  readonly property bool lyricsWanted: {
+    for (var i = 0; i < widgets.length; i++)
+      if (widgets[i].enabled && widgets[i].type === "lyrics") return true
+    return false
+  }
+
+  // A request is only answered once: a cache hit is a cache hit however many
+  // cards ask, and a failure is left alone for an hour so a song LRCLIB does
+  // not have is not asked about on every frame.
+  function requestLyrics(artist, title, length) {
+    if (!service.lyricsWanted) return
+    var key = Model.trackKey(artist, title)
+    if (!key) return
+    var have = service.lyrics[key]
+    if (have) {
+      if (have.state === "ready" || have.state === "fetching") return
+      if (have.state === "missing" && Date.now() - (have.at || 0) < 3600000) return
+    }
+    var queue = service.lyricQueue.slice()
+    queue.push({
+      key: key,
+      artist: String(artist || ""),
+      title: String(title || ""),
+      length: Number(length) || 0
+    })
+    service.lyricQueue = queue
+    startNextLyric()
+  }
+
+  function startNextLyric() {
+    if (lyricProc.running) return
+    var queue = service.lyricQueue
+    if (!queue || queue.length === 0) return
+    var pending = queue[0]
+    service.lyricQueue = queue.slice(1)
+    // Reassigned whole, never mutated: a binding reading the song off this map
+    // only re-evaluates when the property itself changes.
+    var next = ({})
+    for (var key in service.lyrics) next[key] = service.lyrics[key]
+    next[pending.key] = { state: "fetching", at: Date.now() }
+    service.lyrics = next
+
+    lyricProc.key = pending.key
+    // LRCLIB matches on the artist and title themselves; a track with neither
+    // is skipped before it got here. Both are percent-encoded, so whatever the
+    // player published travels as data rather than as URL.
+    lyricProc.command = ["/usr/bin/timeout", "-k", "2", "25",
+      "/usr/bin/curl", "-fsSL", "--max-time", "20",
+      "-H", "User-Agent: omarchy-widgets (https://github.com/anishfn/omarchy-widgets)",
+      "https://lrclib.net/api/get?track_name=" + encodeURIComponent(pending.title)
+        + "&artist_name=" + encodeURIComponent(pending.artist)
+        + (pending.length > 0 ? "&duration=" + Math.round(pending.length) : "")
+        + "&synced=true"]
+    lyricProc.running = true
+  }
+
+  function storeLyrics(key, parsed) {
+    var next = ({})
+    for (var k in service.lyrics) next[k] = service.lyrics[k]
+    next[key] = parsed
+      ? { lines: parsed.lines, synced: parsed.synced, state: "ready", at: Date.now() }
+      : { lines: [], synced: false, state: "missing", at: Date.now() }
+    service.lyrics = next
+  }
+
+  Process {
+    id: lyricProc
+    running: false
+    property string key: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = Model.parseLyricsResponse(text)
+        if (parsed) {
+          service.storeLyrics(lyricProc.key, parsed)
+          service.lyricsError = ""
+        } else {
+          // A "song not found" answer and a network failure look alike here --
+          // both come back as no parsed words. Keep whatever is already drawn,
+          // and mark the request missing so it is not retried every frame. The
+          // error flag survives for the next track, so a dead network reads as
+          // "unavailable" rather than "no lyrics" while a fetch hangs.
+          service.storeLyrics(lyricProc.key, null)
+          service.lyricsError = "unavailable"
+        }
+      }
+    }
+    onRunningChanged: if (!running) Qt.callLater(service.startNextLyric)
+  }
+
   // ---------------------------------------------------------------- todos
   //
   // A text file, watched. No request, no daemon, no format anybody has to
