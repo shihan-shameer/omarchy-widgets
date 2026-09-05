@@ -173,7 +173,14 @@ Item {
       // first run, the newest catalogue entries included. Keep what is on
       // screen and leave the file alone; the next full read stands on its own.
       if (service.configLoaded) return
-      next = Model.defaultConfig()
+      // A first run (or a genuinely empty file) still has to cover the whole
+      // catalogue. Seeding a bare `defaultConfig()` and writing it back would
+      // make the first transient empty read during startup clobber a file that
+      // a hand-edit — a disabled lyrics entry, say — had just grown: that path
+      // writes a clock-only config over it before the real content ever loads.
+      // Running the seed through coverage, exactly like the real-file path
+      // below, keeps whatever is written back complete.
+      next = Model.ensureCatalogCoverage(Model.defaultConfig())
     } else {
       var parsed = null
       try {

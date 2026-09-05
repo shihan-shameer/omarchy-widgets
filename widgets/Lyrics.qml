@@ -243,7 +243,7 @@ Item {
         required property var modelData
         required property int index
 
-        readonly property string full: String(modelData || "")
+        readonly property string full: Model.lineText(modelData)
         readonly property bool isCurrentLine: root.visibleCurrent === index
         readonly property bool isPast: index < root.visibleCurrent
         readonly property real lineWidth: Math.max(0, linesBlock.width - root.pad * 2)

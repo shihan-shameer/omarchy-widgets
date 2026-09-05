@@ -1917,6 +1917,17 @@ function plainLines(raw) {
   return out
 }
 
+// The words of one entry in a `lines` array. Synced entries carry
+// `{ time, text }`; plain ones are the string itself. A card drawing the
+// words must not stringify the entry whole: `String({ time: 5, text: "hi" })`
+// is a promise of "[object ...]", not the lyric, so the drawing side asks
+// for this instead.
+function lineText(line) {
+  if (line == null) return ""
+  var words = typeof line === "object" ? line.text : line
+  return String(words == null ? "" : words)
+}
+
 // The LRCLIB response, reduced to what a card can draw: the timed lines when
 // the song has synced lyrics, the plain lines otherwise, and nothing at all
 // for a song LRCLIB does not have. Returns null for a response that cannot be
@@ -3380,6 +3391,7 @@ if (typeof module !== "undefined" && module.exports) {
     trackKey: trackKey,
     parseLrc: parseLrc,
     plainLines: plainLines,
+    lineText: lineText,
     parseLyricsResponse: parseLyricsResponse,
     lyricIndexAt: lyricIndexAt,
     estimatedIndex: estimatedIndex,

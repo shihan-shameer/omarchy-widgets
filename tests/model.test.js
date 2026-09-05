@@ -413,6 +413,57 @@ test("coverage settles on one canonical serialization, so the save/watch loop st
     Model.normalizeLayout(null).side, "the added widget's side resolves in the first pass")
 })
 
+test("an empty first read seeds the whole catalogue, so a startup race cannot drop a hand-added widget", () => {
+  // The service's empty branch seeds a first run and writes it back. Before
+  // the fix that seed was a bare `defaultConfig()` -- one clock, nothing else
+  // -- so when the watcher surfaced the very first read as empty (an atomic
+  // write or an external truncate, before any real content has loaded) the
+  // write meant to bootstrap buried a hand-edited file that had just gained a
+  // disabled lyrics entry. The seed must cover every catalogue type, exactly
+  // like the real-file path does: only then can no startup write drop a type
+  // that already existed on disk.
+  const seed = Model.ensureCatalogCoverage(Model.defaultConfig())
+  for (const type of Model.catalogTypes()) {
+    assert.ok(seed.widgets.some((w) => w.type === type),
+      `the first-run seed is missing ${type}`)
+  }
+  const lyrics = Model.findInstance(seed, "lyrics")
+  assert.ok(lyrics && lyrics.enabled === false, "the seeded additions arrive switched off")
+
+  // A hand-edited disabled lyrics entry also survives coverage untouched --
+  // the exact entry the race would otherwise erase -- and the seeded write is
+  // stable through the load/save loop, so it cannot feed the watcher a
+  // serialization that needs rewriting forever.
+  const handEdited = Model.ensureCatalogCoverage({
+    widgets: [
+      { id: "clock", type: "clock", enabled: true, col: 0, row: 0 },
+      { id: "lyrics", type: "lyrics", enabled: false, col: 0, row: 1 }
+    ]
+  })
+  const lyricsKept = Model.findInstance(handEdited, "lyrics")
+  assert.ok(lyricsKept, "the hand-added disabled lyrics entry survives coverage")
+  assert.equal(lyricsKept.enabled, false)
+  assert.equal(handEdited.widgets.filter((w) => w.type === "lyrics").length, 1,
+    "coverage does not add a second lyrics alongside the existing one")
+
+  const written = serialize(seed)
+  assert.equal(serialize(Model.ensureCatalogCoverage(JSON.parse(written))), written,
+    "the seeded serialization is stable on reload")
+})
+
+test("the service's first-run seed goes through coverage, not a bare default", () => {
+  // The empty-text branch of loadConfig writes the seed it chose straight back
+  // to disk, so that seed must not be a bare defaultConfig(): a startup-time
+  // empty read would then clobber a hand-edited file down to a single clock,
+  // the disabled lyrics entry included. The wiring itself is pinned here so a
+  // revert to `Model.defaultConfig()` alone is caught by a test rather than
+  // by somebody's config disappearing. Same convention as the moduleName
+  // check on BarWidget.qml above.
+  const src = read("Service.qml")
+  assert.ok(/next = Model\.ensureCatalogCoverage\(Model\.defaultConfig\(\)\)/.test(src),
+    "loadConfig's empty branch must seed via ensureCatalogCoverage")
+})
+
 // ---------------------------------------------------------------- migration
 
 test("a config from the free-placement model is repacked, not discarded", () => {
@@ -1694,6 +1745,20 @@ test("plain lyrics estimate their place by length", () => {
   assert.equal(Model.estimatedIndex(["a", "b"], 10, -1), -1)
   assert.equal(Model.estimatedIndex([], 10, 100), -1)
   assert.equal(Model.estimatedIndex(null, 10, 100), -1)
+})
+
+// The card draws each entry through this, so a `{ time, text }` object must
+// read as its text -- `String()` on an entry whole is "[object ...]" -- and a
+// plain string entry must pass through untouched.
+test("a lyric line renders as its words, not its shape", () => {
+  assert.equal(Model.lineText({ time: 5, text: "lean on" }), "lean on")
+  assert.equal(Model.lineText("lean on"), "lean on")
+  assert.notEqual(Model.lineText({ time: 5, text: "hi" }), "[object Object]")
+  assert.equal(Model.lineText({ time: 5, text: "" }), "")
+  assert.equal(Model.lineText({ time: 5 }), "")
+  assert.equal(Model.lineText(""), "")
+  assert.equal(Model.lineText(null), "")
+  assert.equal(Model.lineText(undefined), "")
 })
 
 // ------------------------------------------------------------ interactivity
